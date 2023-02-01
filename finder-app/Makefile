@@ -4,7 +4,7 @@ SRC=writer.c
 TARGET=writer
 
 all:
-	$(CC) $(FLAGS) $(SRC) -o $(TARGET)
+	$(CROSS_COMPILE)$(CC) $(FLAGS) $(SRC) -o $(TARGET)
 
 clean:
-	rm *.o $(TARGET)
+	rm -f *.o $(TARGET)
