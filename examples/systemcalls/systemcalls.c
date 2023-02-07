@@ -140,7 +140,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 	}
 	close(fd);
 	execv(command[0], command);
-	return false; // if we ever return, it means command failed
+	exit(1);
 	break;
     default:
 	close(fd);
