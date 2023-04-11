@@ -17,15 +17,16 @@
 // Network macros
 #define SERVER_PORT	"9000"
 #define BACKLOG		10	// num pending connections queue to hold
-#define BUF_LENGTH      1048576
 #define FILE_NAME	"/var/tmp/aesdsocketdata"
+#define BUF_LENGTH	2
 
 static volatile unsigned char running = 1;
 
 void init_sigaction(void);
 void sigint_handler(int sig);
 
-int init_file(void);
+int init_file_writer(void);
+void read_file_to_buf(char *buf, unsigned int tot_bytes_recv);
 void write_str(int fd, const char *buf, int len);
 void close_file(int fd);
 
@@ -33,18 +34,31 @@ void *get_in_addr(struct sockaddr *sa);
 
 int main(int argc, char *argv[])
 {
-    int fd = init_file();
     init_sigaction();
+    
+    if (argc != 2) {
+	exit(1);
+    } 
+    int daemon_flag = !strcmp(argv[1], "-d");
     
     int server_fd, new_fd;
     socklen_t new_conn_addr_size;
-    char *buf;
+    
     int opt = 1;
-    int num_bytes = 0;
     char s[INET6_ADDRSTRLEN];
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage new_conn_addr;
+    unsigned int buf_length = BUF_LENGTH;
+    unsigned int tot_bytes_recv = 0;
 
+    char *buf = (char *)calloc(buf_length, sizeof(char)); // allocate memory for buffer;
+    if(!buf) {
+	perror("calloc error");
+	exit(1);
+    }
+
+    int fd = init_file_writer();
+    
     // hints points to an addrinfo structure that specifies criteria for
     // selecting socket address structure returned in res in getaddrinfo function
     memset(&hints, 0, sizeof hints);
@@ -95,12 +109,14 @@ int main(int argc, char *argv[])
 	exit(1);
     }
 
-    unsigned int temp = 0;
+#warning FORK HERE!
     
-    buf = (char *)calloc(BUF_LENGTH, sizeof(char)); // allocate memory for buffer
     while(running) {
 	new_conn_addr_size = sizeof(new_conn_addr);
-	new_fd = accept(server_fd, (struct sockaddr *)&new_conn_addr, &new_conn_addr_size);
+	if ((new_fd = accept(server_fd, (struct sockaddr *)&new_conn_addr, &new_conn_addr_size)) == -1) {
+	    perror("accept failure");
+	    break; // exit gracefully
+	}
 
 	// inet_ntop converts IPv4 and IPv6 addresses from binary to text form
 	inet_ntop(new_conn_addr.ss_family,
@@ -108,47 +124,51 @@ int main(int argc, char *argv[])
 		  s, sizeof(s));
 	syslog(LOG_INFO, "Accepted connection from %s\n", s);
 
-	// logic for receiving a message
-	/* unsigned int idx = 0; */
-	/* unsigned char mult_size = 1; */
-	
+	// logic for receiving packets
+	unsigned int num_bytes_recv = 0;
+	unsigned int tot_bytes_packet = 0;
 	while(running) {
-#warning is better to make recv nonblocking in case user exits right after starting program.
-	    if ((num_bytes = recv(new_fd, buf+temp, BUF_LENGTH-temp-1, 0)) == -1) {
+	    if ((num_bytes_recv = recv(new_fd, buf+tot_bytes_packet, buf_length-tot_bytes_packet-1, 0)) == -1) {
 		perror("recv failure");
 		exit(1);
 	    }
-	    if(!num_bytes) { // 0 bytes mean connection ended for TCP stream
-		break;
+	    if (!num_bytes_recv) break; // connection ended
+
+	    tot_bytes_packet += num_bytes_recv;
+	    buf[tot_bytes_packet] = '\0';
+	    if (strchr(buf, '\n')) { // check packet done
+		break; 
 	    }
-	    temp += num_bytes;
-	    buf[temp] = '\0';
-	    printf("Received: %s", buf);
- 	    write_str(fd, buf, temp);
-	    send(new_fd, buf, temp, 0);
+	    // packet not done, expand buffer if needed
+	    if(tot_bytes_packet >= buf_length-1) { 
+		if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
+		    perror("reallocarray error");
+		    exit(1);
+		}
+	    }
 	}
-	/* while(1) { */
-	/*     if ((num_bytes = recv(new_fd, buf+idx, (BUF_LENGTH*mult_size)-idx-1, 0)) == -1) { */
-	/* 	perror("recv failure"); */
-	/* 	exit(1); */
-	/*     } */
-	/*     buf[num_bytes+idx] = '\0'; // so strchr knows where to end search */
-	/*     idx += num_bytes; */
-	/*     if (!strchr(buf, '\n')) { */
-	/* 	mult_size += 1; */
-		
-	/* 	buf = (char *)realloc(buf, BUF_LENGTH*sizeof(char)*mult_size); */
-	/*     } else { */
-	/* 	write_str(fd, buf, idx); */
-	/* 	send(new_fd, buf, idx, 0); */
-	/* 	idx = 0; */
-	/*     } */
-	/* } */
+	tot_bytes_recv += tot_bytes_packet;
+	write_str(fd, buf, tot_bytes_packet);
+
+	// expand buf if contents of file is bigger than it
+	if(tot_bytes_recv > buf_length) {
+	    do {
+		buf_length <<= 1;
+	    } while(tot_bytes_recv > buf_length);
+	    if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
+		    perror("reallocarray error");
+		    exit(1);
+		}
+	}
 	
+	read_file_to_buf(buf, tot_bytes_recv);
+	send(new_fd, buf, tot_bytes_recv, 0);
+
 	syslog(LOG_INFO, "Closed connection from %s\n", s);
     }
     
     close_file(fd);
+    remove(FILE_NAME);
     free(buf);
     return 0;
 }
@@ -171,48 +191,57 @@ void init_sigaction(void)
     struct sigaction sa;
     sa.sa_handler = sigint_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART; // if a blocked call to one of interfaces is interrupted by signal handler, then call is automatically restarted, such as the function accept()
+    sa.sa_flags = 0; // no flags, just exit if system call interrupted
     if (sigaction(SIGINT, &sa, NULL) < 0) {
-	perror("sigaction fail");
+	perror("sigaction sigint fail");
 	exit(1);
     }
     if (sigaction(SIGTERM, &sa, NULL) < 0) {
-	perror("sigaction fail");
+	perror("sigaction sigterm fail");
 	exit(1);
     }
 }
 
 /**
- * init_file()
+ * init_file_writer()
  *
  * Initialize FILE_NAME to write to
  *
  * Return: void
  */
 
-int init_file(void)
+int init_file_writer(void)
 {
     int fd;
 
-    fd = open(FILE_NAME, O_WRONLY|O_CREAT|O_TRUNC, 0644);
-    if (fd < 0) {
+    if ((fd = open(FILE_NAME, O_WRONLY|O_CREAT|O_TRUNC, 0644)) < 0) {
 	perror("open fali");
 	exit(1);
     }
-    /* if (fd < 0) { */
-    /* 	if (errno == EEXIST) { */
-    /* 	    if (truncate(FILE_NAME, 0) < 0) { */
-    /* 		perror("truncate fail"); */
-    /* 		exit(1); */
-    /* 	    } */
-    /* 	} else { */
-    /* 	    perror("open fail"); */
-    /* 	    exit(1); */
-    /* 	} */
-    /* } */
-
     return fd;
     
+}
+
+/**
+ * read_file_to_buf()
+ *
+ * Read contents of FILE_NAME to buf
+ *
+ * Return: void
+ */
+
+void read_file_to_buf(char *buf, unsigned int tot_bytes_recv)
+{
+    int fd;
+
+    if ((fd = open(FILE_NAME, O_RDONLY, 0644)) < 0) {
+	perror("open fali");
+	exit(1);
+    }
+
+    read(fd, buf, tot_bytes_recv);
+
+    close(fd);
 }   
 
 void write_str(int fd, const char *buf, int len)
