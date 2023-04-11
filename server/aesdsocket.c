@@ -36,21 +36,19 @@ int main(int argc, char *argv[])
 {
     init_sigaction();
     
-    if (argc != 2) {
-	exit(1);
-    } 
-    int daemon_flag = !strcmp(argv[1], "-d");
-    
     int server_fd, new_fd;
     socklen_t new_conn_addr_size;
-    
     int opt = 1;
     char s[INET6_ADDRSTRLEN];
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage new_conn_addr;
     unsigned int buf_length = BUF_LENGTH;
     unsigned int tot_bytes_recv = 0;
-
+    int daemon_flag = 0;
+    if (argc == 2) {
+	daemon_flag = !strcmp(argv[1], "-d");
+    } 
+    
     char *buf = (char *)calloc(buf_length, sizeof(char)); // allocate memory for buffer;
     if(!buf) {
 	perror("calloc error");
@@ -105,12 +103,23 @@ int main(int argc, char *argv[])
 
     // mark socket as a passive socket (accepts connections)
     if (listen(server_fd, BACKLOG) == -1) { 
-	perror("listen");
+	perror("listen error");
 	exit(1);
     }
 
-#warning FORK HERE!
-    
+    if (daemon_flag) {
+	pid_t pid = fork();
+	if (0 == pid) {
+	    // child process
+	    goto conn_handle;
+	} else if (pid > 0) {
+	    exit(0);
+	} else {
+	    perror("fork error");
+	    exit(1);
+	}
+    }
+ conn_handle:
     while(running) {
 	new_conn_addr_size = sizeof(new_conn_addr);
 	if ((new_fd = accept(server_fd, (struct sockaddr *)&new_conn_addr, &new_conn_addr_size)) == -1) {
@@ -178,7 +187,6 @@ void sigint_handler(int sig)
     (void)sig;
     syslog(LOG_INFO, "Caught signal, exiting");
     running = 0;
-    printf("running: %d\n", running);
 }
 
 /**
