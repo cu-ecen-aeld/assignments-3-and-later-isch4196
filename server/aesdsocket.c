@@ -33,16 +33,20 @@ void close_file(int fd);
 void *get_in_addr(struct sockaddr *sa);
 void *thread_conn_handler(void *vargp);
 
+/* typedef struct conn_data_s { */
+/*     pthread_t *thread; // thread id */
+/*     unsigned char thread_done; */
+/*     int new_fd; // file descriptor of socket passed into thread */
+/*     char *s; // name of socket passed into thread */
+/* } conn_data_t; */
+
 typedef struct slist_data_s {
     pthread_t *thread;
+    int new_fd; // file descriptor of socket passed into thread
+    char *s; // name of socket passed into thread
     unsigned char thread_done;
     SLIST_ENTRY(slist_data_s) entries;
 } slist_data_t;
-
-typedef struct conn_data_s {
-    int new_fd;
-    char *s;
-} conn_data_t;
 
 int main(int argc, char *argv[])
 {
@@ -158,10 +162,13 @@ int main(int argc, char *argv[])
 	
 	slist_data_t *datap = (slist_data_t*)malloc(sizeof(slist_data_t));
 	datap->thread = (pthread_t*)malloc(sizeof(pthread_t));
+	datap->s = (char*)malloc(sizeof(char)*INET6_ADDRSTRLEN);
+	strcpy(datap->s, s);
+	datap->new_fd = new_fd;
+	datap->thread_done = 0;
+	
 	SLIST_INSERT_HEAD(&head, datap, entries);
 	pthread_create(datap->thread, NULL, thread_conn_handler, NULL);
-
-#warning malloc string s and new_fd for thread to handle
 	
 	syslog(LOG_INFO, "Accepted connection from %s\n", s);
 
@@ -218,6 +225,7 @@ int main(int argc, char *argv[])
 	datap = SLIST_FIRST(&head);
 	SLIST_REMOVE_HEAD(&head, entries);
 	free(datap->thread);
+	free(datap->s);
 	free(datap);
     }
     
