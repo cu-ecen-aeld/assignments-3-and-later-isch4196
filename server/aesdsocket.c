@@ -13,6 +13,8 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include "queue.h"
 
 // Network macros
 #define SERVER_PORT	"9000"
@@ -24,13 +26,23 @@ static volatile unsigned char running = 1;
 
 void init_sigaction(void);
 void sigint_handler(int sig);
-
 int init_file_writer(void);
 void read_file_to_buf(char *buf, unsigned int tot_bytes_recv);
 void write_str(int fd, const char *buf, int len);
 void close_file(int fd);
-
 void *get_in_addr(struct sockaddr *sa);
+void *thread_conn_handler(void *vargp);
+
+typedef struct slist_data_s {
+    pthread_t *thread;
+    unsigned char thread_done;
+    SLIST_ENTRY(slist_data_s) entries;
+} slist_data_t;
+
+typedef struct conn_data_s {
+    int new_fd;
+    char *s;
+} conn_data_t;
 
 int main(int argc, char *argv[])
 {
@@ -45,10 +57,12 @@ int main(int argc, char *argv[])
     unsigned int buf_length = BUF_LENGTH;
     unsigned int tot_bytes_recv = 0;
     int daemon_flag = 0;
+    
     if (argc == 2) {
 	daemon_flag = !strcmp(argv[1], "-d");
     } 
-    
+
+    // Initializations
     char *buf = (char *)calloc(buf_length, sizeof(char)); // allocate memory for buffer;
     if(!buf) {
 	perror("calloc error");
@@ -56,7 +70,17 @@ int main(int argc, char *argv[])
     }
 
     int fd = init_file_writer();
+
+    SLIST_HEAD(pthread_slist, slist_data_s) head;
+    SLIST_INIT(&head);
+
+    /* slist_data_t *datap = NULL; */
+    /* for (int i=0; i<3; i++) { */
+    /* 	datap = malloc(sizeof(slist_data_t)); */
+    /* 	SLIST_INSERT_HEAD(&head, datap, entries); */
+    /* } */
     
+    // Set up socket
     // hints points to an addrinfo structure that specifies criteria for
     // selecting socket address structure returned in res in getaddrinfo function
     memset(&hints, 0, sizeof hints);
@@ -131,6 +155,14 @@ int main(int argc, char *argv[])
 	inet_ntop(new_conn_addr.ss_family,
 		  get_in_addr((struct sockaddr *)&new_conn_addr),
 		  s, sizeof(s));
+	
+	slist_data_t *datap = (slist_data_t*)malloc(sizeof(slist_data_t));
+	datap->thread = (pthread_t*)malloc(sizeof(pthread_t));
+	SLIST_INSERT_HEAD(&head, datap, entries);
+	pthread_create(datap->thread, NULL, thread_conn_handler, NULL);
+
+#warning malloc string s and new_fd for thread to handle
+	
 	syslog(LOG_INFO, "Accepted connection from %s\n", s);
 
 	// logic for receiving packets
@@ -174,11 +206,21 @@ int main(int argc, char *argv[])
 	send(new_fd, buf, tot_bytes_recv, 0);
 
 	syslog(LOG_INFO, "Closed connection from %s\n", s);
+	pthread_join(*(datap->thread), NULL);
     }
     
     close_file(fd);
     remove(FILE_NAME);
     free(buf);
+
+    slist_data_t *datap = NULL;
+    while (!SLIST_EMPTY(&head)) {
+	datap = SLIST_FIRST(&head);
+	SLIST_REMOVE_HEAD(&head, entries);
+	free(datap->thread);
+	free(datap);
+    }
+    
     return 0;
 }
 
@@ -252,6 +294,14 @@ void read_file_to_buf(char *buf, unsigned int tot_bytes_recv)
     close(fd);
 }   
 
+/**
+ * write_str() - Write string buf to file fd
+ * @fd:  file descriptor of file to write to 
+ * @buf: pointer to buffer containing string to write
+ * @len: length of string to write
+ *
+ * Return: void
+ */
 void write_str(int fd, const char *buf, int len)
 {
     if(write(fd, buf, len) < 0) {
@@ -261,6 +311,12 @@ void write_str(int fd, const char *buf, int len)
     
 }
 
+/**
+ * close_file() - Close a file descriptor
+ * @fd: file descriptor to closen
+ *
+ * Return: void
+ */
 void close_file(int fd)
 {
     if(close(fd) < 0) {
@@ -277,4 +333,12 @@ void *get_in_addr(struct sockaddr *sa)
     }
 
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
+void *thread_conn_handler(void *vargp)
+{
+    int i = 0;
+    i += 2;
+
+    pthread_exit((void*)0);
 }
