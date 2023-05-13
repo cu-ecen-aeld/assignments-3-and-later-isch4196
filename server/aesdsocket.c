@@ -20,7 +20,7 @@
 #define SERVER_PORT	"9000"
 #define BACKLOG		10	// num pending connections queue to hold
 #define FILE_NAME	"/var/tmp/aesdsocketdata"
-#define BUF_LENGTH	2
+#define BUF_LENGTH	1024
 
 static volatile unsigned char running = 1;
 
@@ -48,6 +48,9 @@ typedef struct slist_data_s {
     SLIST_ENTRY(slist_data_s) entries;
 } slist_data_t;
 
+int fd;
+unsigned int tot_bytes_recv = 0;
+
 int main(int argc, char *argv[])
 {
     init_sigaction();
@@ -58,32 +61,18 @@ int main(int argc, char *argv[])
     char s[INET6_ADDRSTRLEN];
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage new_conn_addr;
-    unsigned int buf_length = BUF_LENGTH;
-    unsigned int tot_bytes_recv = 0;
+    
     int daemon_flag = 0;
     
     if (argc == 2) {
 	daemon_flag = !strcmp(argv[1], "-d");
     } 
 
-    // Initializations
-    char *buf = (char *)calloc(buf_length, sizeof(char)); // allocate memory for buffer;
-    if(!buf) {
-	perror("calloc error");
-	exit(1);
-    }
-
-    int fd = init_file_writer();
+    fd = init_file_writer();
 
     SLIST_HEAD(pthread_slist, slist_data_s) head;
     SLIST_INIT(&head);
 
-    /* slist_data_t *datap = NULL; */
-    /* for (int i=0; i<3; i++) { */
-    /* 	datap = malloc(sizeof(slist_data_t)); */
-    /* 	SLIST_INSERT_HEAD(&head, datap, entries); */
-    /* } */
-    
     // Set up socket
     // hints points to an addrinfo structure that specifies criteria for
     // selecting socket address structure returned in res in getaddrinfo function
@@ -159,7 +148,8 @@ int main(int argc, char *argv[])
 	inet_ntop(new_conn_addr.ss_family,
 		  get_in_addr((struct sockaddr *)&new_conn_addr),
 		  s, sizeof(s));
-	
+
+	// initialize node data
 	slist_data_t *datap = (slist_data_t*)malloc(sizeof(slist_data_t));
 	datap->thread = (pthread_t*)malloc(sizeof(pthread_t));
 	datap->conn_data.s = (char*)malloc(sizeof(char)*INET6_ADDRSTRLEN);
@@ -169,58 +159,30 @@ int main(int argc, char *argv[])
 	
 	SLIST_INSERT_HEAD(&head, datap, entries);
 	pthread_create(datap->thread, NULL, thread_conn_handler, (void*)&(datap->conn_data));
-	
-	syslog(LOG_INFO, "Accepted connection from %s\n", s);
 
-	// logic for receiving packets
-	unsigned int num_bytes_recv = 0;
-	unsigned int tot_bytes_packet = 0;
-	while(running) {
-	    if ((num_bytes_recv = recv(new_fd, buf+tot_bytes_packet, buf_length-tot_bytes_packet-1, 0)) == -1) {
-		perror("recv failure");
-		exit(1);
-	    }
-	    if (!num_bytes_recv) break; // connection ended
-
-	    tot_bytes_packet += num_bytes_recv;
-	    buf[tot_bytes_packet] = '\0';
-	    if (strchr(buf, '\n')) { // check packet done
-		break; 
-	    }
-	    // packet not done, expand buffer if needed
-	    if(tot_bytes_packet >= buf_length-1) { 
-		if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
-		    perror("reallocarray error");
-		    exit(1);
-		}
+	// join threads and delete their data if they have finished
+	slist_data_t *tdatap = NULL;
+	SLIST_FOREACH_SAFE(datap, &head, entries, tdatap) {
+	    if (datap->conn_data.thread_done) {
+		pthread_join(*(datap->thread), NULL);
+		SLIST_REMOVE(&head, datap, slist_data_s, entries);
+		free(datap->thread);
+		free(datap->conn_data.s);
+		free(datap);
 	    }
 	}
-	tot_bytes_recv += tot_bytes_packet;
-	write_str(fd, buf, tot_bytes_packet);
+    }
 
-	// expand buf if contents of file is bigger than it
-	if(tot_bytes_recv > buf_length) {
-	    do {
-		buf_length <<= 1;
-	    } while(tot_bytes_recv > buf_length);
-	    if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
-		    perror("reallocarray error");
-		    exit(1);
-		}
+    // pthread_join in case of sigint
+    slist_data_t *datap = NULL;
+    SLIST_FOREACH(datap, &head, entries) {
+	if (datap->conn_data.thread_done) {
+	    pthread_join(*(datap->thread), NULL);
 	}
-	
-	read_file_to_buf(buf, tot_bytes_recv);
-	send(new_fd, buf, tot_bytes_recv, 0);
-
-	syslog(LOG_INFO, "Closed connection from %s\n", s);
-	pthread_join(*(datap->thread), NULL);
     }
     
     close_file(fd);
     remove(FILE_NAME);
-    free(buf);
-
-    slist_data_t *datap = NULL;
     while (!SLIST_EMPTY(&head)) {
 	datap = SLIST_FIRST(&head);
 	SLIST_REMOVE_HEAD(&head, entries);
@@ -293,7 +255,7 @@ void read_file_to_buf(char *buf, unsigned int tot_bytes_recv)
     int fd;
 
     if ((fd = open(FILE_NAME, O_RDONLY, 0644)) < 0) {
-	perror("open fali");
+	perror("open fail");
 	exit(1);
     }
 
@@ -346,6 +308,58 @@ void *get_in_addr(struct sockaddr *sa)
 void *thread_conn_handler(void *vargp)
 {
     conn_data_t *conn_data = (conn_data_t*)vargp;
+    syslog(LOG_INFO, "Accepted connection from %s\n", conn_data->s);
 
+    unsigned int buf_length = BUF_LENGTH;
+    char *buf = (char *)calloc(buf_length, sizeof(char)); // allocate memory for buffer;
+    if(!buf) {
+	perror("calloc error");
+	exit(1);
+    }
+    unsigned int num_bytes_recv = 0;
+    unsigned int tot_bytes_packet = 0; // total bytes received so far in packet
+
+    // Obtain all of the data
+    while(running) {
+	if ((num_bytes_recv = recv(conn_data->new_fd, buf+tot_bytes_packet, buf_length-tot_bytes_packet-1, 0)) == -1) {
+	    perror("recv failure");
+	    exit(1);
+	}
+	if (!num_bytes_recv) break; // connection ended
+
+	tot_bytes_packet += num_bytes_recv;
+	buf[tot_bytes_packet] = '\0';
+	if (strchr(buf, '\n')) { // check packet done
+	    break; 
+	}
+	// packet not done, expand buffer if needed
+	if(tot_bytes_packet >= buf_length-1) { 
+	    if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
+		perror("reallocarray error");
+		exit(1);
+	    }
+	}
+    }
+    
+    tot_bytes_recv += tot_bytes_packet;
+    write_str(fd, buf, tot_bytes_packet);
+
+    // expand buf if contents of file is bigger than it
+    if(tot_bytes_recv > buf_length) {
+	do {
+	    buf_length <<= 1;
+	} while(tot_bytes_recv > buf_length);
+	if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
+	    perror("reallocarray error");
+	    exit(1);
+	}
+    }
+	
+    read_file_to_buf(buf, tot_bytes_recv);
+    send(conn_data->new_fd, buf, tot_bytes_recv, 0);    
+    free(buf);
+    
+    syslog(LOG_INFO, "Closed connection from %s\n", conn_data->s);
+    conn_data->thread_done = 1;
     pthread_exit((void*)0);
 }
