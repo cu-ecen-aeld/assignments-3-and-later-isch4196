@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <time.h>
 #include "queue.h"
 
 // Network macros
@@ -22,12 +23,12 @@
 #define FILE_NAME	"/var/tmp/aesdsocketdata"
 #define BUF_LENGTH	1024
 
-static volatile unsigned char running = 1;
+#define SECS_IN_DAY	3600
 
 void init_sigaction(void);
 void sigint_handler(int sig);
 int init_file_writer(void);
-void read_file_to_buf(char *buf, unsigned int tot_bytes_recv);
+void read_file_to_buf(char *buf);
 void write_str(int fd, const char *buf, int len);
 void close_file(int fd);
 void *get_in_addr(struct sockaddr *sa);
@@ -50,19 +51,43 @@ typedef struct slist_data_s {
 
 int fd;
 unsigned int tot_bytes_recv = 0;
+static volatile unsigned char running = 1;
+pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 
 int main(int argc, char *argv[])
 {
+    // timer can possibly post the semaphore while a thread waits (blocks) to print the time.
+    // however, I want to know how the blocking is done, since I don't want to waste any resources by spinblocking
+    /* timer_t timerid = NULL; */
+    /* struct sigevent sev; */
+    /* timer_create(CLOCK_REALTIME, &sev, &timerid); */
+    
+    // we can use timer_create. Timers are not inherited, so create in child
+    /* struct timespec res; */
+    /* if (clock_gettime(CLOCK_REALTIME, &res) == -1) { */
+    /* 	perror("clock_getres"); */
+    /* 	exit(EXIT_FAILURE); */
+    /* } */
+    /* long days = res.tv_sec / SECS_IN_DAY; */
+    /* if (days > 0) */
+    /* 	printf("%ld days + ", days); */
+    /* printf("%2dh %2dm %2ds", */
+    /* 	   (int) (res.tv_sec % SECS_IN_DAY) / 3600, */
+    /* 	   (int) (res.tv_sec % 3600) / 60, */
+    /* 	   (int) res.tv_sec % 60); */
+    /* printf(")\n"); */
+    /* return 0; */
+    
+    pthread_mutex_init(&mut, NULL);
+    
     init_sigaction();
     
     int server_fd, new_fd;
-    socklen_t new_conn_addr_size;
     int opt = 1;
-    char s[INET6_ADDRSTRLEN];
+    socklen_t new_conn_addr_size;
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage new_conn_addr;
-    
-    int daemon_flag = 0;
+    unsigned char daemon_flag = 0;
     
     if (argc == 2) {
 	daemon_flag = !strcmp(argv[1], "-d");
@@ -110,7 +135,7 @@ int main(int argc, char *argv[])
 	break;
     }
 
-    freeaddrinfo(servinfo); // all done with this structure
+    freeaddrinfo(servinfo); // all done with this structure, discard
 
     // make sure we were able to bind to something
     if (!p) {
@@ -130,13 +155,16 @@ int main(int argc, char *argv[])
 	    // child process
 	    goto conn_handle;
 	} else if (pid > 0) {
-	    exit(0);
+	    exit(0); // parent process
 	} else {
 	    perror("fork error");
 	    exit(1);
 	}
     }
  conn_handle:
+    // 
+    
+    // waits for a connection and creates a new thread to handle
     while(running) {
 	new_conn_addr_size = sizeof(new_conn_addr);
 	if ((new_fd = accept(server_fd, (struct sockaddr *)&new_conn_addr, &new_conn_addr_size)) == -1) {
@@ -144,18 +172,17 @@ int main(int argc, char *argv[])
 	    break; // exit gracefully
 	}
 
-	// inet_ntop converts IPv4 and IPv6 addresses from binary to text form
-	inet_ntop(new_conn_addr.ss_family,
-		  get_in_addr((struct sockaddr *)&new_conn_addr),
-		  s, sizeof(s));
-
 	// initialize node data
 	slist_data_t *datap = (slist_data_t*)malloc(sizeof(slist_data_t));
 	datap->thread = (pthread_t*)malloc(sizeof(pthread_t));
 	datap->conn_data.s = (char*)malloc(sizeof(char)*INET6_ADDRSTRLEN);
-	strcpy(datap->conn_data.s, s);
 	datap->conn_data.new_fd = new_fd;
 	datap->conn_data.thread_done = 0;
+	
+	// inet_ntop converts IPv4 and IPv6 addresses from binary to text form
+	inet_ntop(new_conn_addr.ss_family,
+		  get_in_addr((struct sockaddr *)&new_conn_addr),
+		  datap->conn_data.s, sizeof(char)*INET6_ADDRSTRLEN);
 	
 	SLIST_INSERT_HEAD(&head, datap, entries);
 	pthread_create(datap->thread, NULL, thread_conn_handler, (void*)&(datap->conn_data));
@@ -173,27 +200,29 @@ int main(int argc, char *argv[])
 	}
     }
 
-    // pthread_join in case of sigint
-    slist_data_t *datap = NULL;
-    SLIST_FOREACH(datap, &head, entries) {
-	if (datap->conn_data.thread_done) {
-	    pthread_join(*(datap->thread), NULL);
-	}
-    }
-    
+    // clean up after received a sigint
     close_file(fd);
     remove(FILE_NAME);
-    while (!SLIST_EMPTY(&head)) {
-	datap = SLIST_FIRST(&head);
-	SLIST_REMOVE_HEAD(&head, entries);
-	free(datap->thread);
-	free(datap->conn_data.s);
-	free(datap);
+    pthread_mutex_destroy(&mut);
+    slist_data_t *datap = NULL;
+    slist_data_t *tdatap = NULL;
+    SLIST_FOREACH_SAFE(datap, &head, entries, tdatap) {
+	if (datap->conn_data.thread_done) {
+	    pthread_join(*(datap->thread), NULL); // wait for threads to finish on sigint? else memleak
+	    SLIST_REMOVE(&head, datap, slist_data_s, entries);
+	    free(datap->thread);
+	    free(datap->conn_data.s);
+	    free(datap);
+	}
     }
-    
     return 0;
 }
 
+/**
+ * sigint_handler() - Notify program to shut down on sigint
+ *
+ * Return: void
+ */
 void sigint_handler(int sig)
 {
     (void)sig;
@@ -250,7 +279,7 @@ int init_file_writer(void)
  * Return: void
  */
 
-void read_file_to_buf(char *buf, unsigned int tot_bytes_recv)
+void read_file_to_buf(char *buf)
 {
     int fd;
 
@@ -260,7 +289,6 @@ void read_file_to_buf(char *buf, unsigned int tot_bytes_recv)
     }
 
     read(fd, buf, tot_bytes_recv);
-
     close(fd);
 }   
 
@@ -274,11 +302,12 @@ void read_file_to_buf(char *buf, unsigned int tot_bytes_recv)
  */
 void write_str(int fd, const char *buf, int len)
 {
+    pthread_mutex_lock(&mut);
     if(write(fd, buf, len) < 0) {
 	perror("write");
 	exit(1);
     }
-    
+    pthread_mutex_unlock(&mut);
 }
 
 /**
@@ -355,7 +384,7 @@ void *thread_conn_handler(void *vargp)
 	}
     }
 	
-    read_file_to_buf(buf, tot_bytes_recv);
+    read_file_to_buf(buf);
     send(conn_data->new_fd, buf, tot_bytes_recv, 0);    
     free(buf);
     
@@ -363,3 +392,4 @@ void *thread_conn_handler(void *vargp)
     conn_data->thread_done = 1;
     pthread_exit((void*)0);
 }
+
