@@ -275,10 +275,11 @@ int init_file_writer(void)
  * read_file_to_buf()
  *
  * Read contents of FILE_NAME to buf
+ * Note that the superior option is to use a pthread_rwlock to allow multiple readers while only one writer
+ * But, this is good enough too :)
  *
  * Return: void
  */
-
 void read_file_to_buf(char *buf)
 {
     int fd;
@@ -287,8 +288,9 @@ void read_file_to_buf(char *buf)
 	perror("open fail");
 	exit(1);
     }
-
+    pthread_mutex_lock(&mut);
     read(fd, buf, tot_bytes_recv);
+    pthread_mutex_unlock(&mut);
     close(fd);
 }   
 
@@ -334,6 +336,12 @@ void *get_in_addr(struct sockaddr *sa)
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
+/**
+ * thread_conn_handler() - Handles receiving/sending data from/to a client
+ * @vargp: argument into thread, containing connection data
+ *
+ * Return: void
+ */
 void *thread_conn_handler(void *vargp)
 {
     conn_data_t *conn_data = (conn_data_t*)vargp;
