@@ -1,6 +1,6 @@
 CC=gcc
-CFLAGS=-ggdb -Wall
-LDFLAGS=-lpthread
+CFLAGS= -Wall
+LDFLAGS=-pthread -lrt
 SRC=aesdsocket.c
 TARGET=aesdsocket
 

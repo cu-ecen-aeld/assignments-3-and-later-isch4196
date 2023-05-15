@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <time.h>
+#include <semaphore.h>
 #include "queue.h"
 
 // Network macros
@@ -23,17 +24,20 @@
 #define FILE_NAME	"/var/tmp/aesdsocketdata"
 #define BUF_LENGTH	1024
 
-#define SECS_IN_DAY	3600
+#define SECS_IN_DAY	(24 * 60 * 60)
+#define TIME_EXPIRE     10	// seconds
 
 void init_sigaction(void);
 void sigint_handler(int sig);
 int init_file_writer(void);
 void read_file_to_buf(char *buf);
-void write_str(int fd, const char *buf, int len);
+void write_str(const char *buf, int len);
 void close_file(int fd);
 void *get_in_addr(struct sockaddr *sa);
 void *thread_conn_handler(void *vargp);
-
+void *ts_handler(void *vargp);
+void release_ts(int id);
+    
 typedef struct conn_data_s {
     int new_fd; // file descriptor of socket passed into thread
     char *s; // name of socket passed into thread
@@ -42,22 +46,20 @@ typedef struct conn_data_s {
 
 typedef struct slist_data_s {
     pthread_t *thread;
-    /* int new_fd; // file descriptor of socket passed into thread */
-    /* char *s; // name of socket passed into thread */
-    /* unsigned char thread_done; */
     conn_data_t conn_data;
     SLIST_ENTRY(slist_data_s) entries;
 } slist_data_t;
 
-int fd;
-unsigned int tot_bytes_recv = 0;
+static int fd;
+static unsigned int tot_bytes_recv = 0;
 static volatile unsigned char running = 1;
-pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
+static sem_t sem_ts;
+static timer_t timer_ts;
+static struct itimerspec itime = {{TIME_EXPIRE,0}, {TIME_EXPIRE,0}};
 
 int main(int argc, char *argv[])
 {
-    // timer can possibly post the semaphore while a thread waits (blocks) to print the time.
-    // however, I want to know how the blocking is done, since I don't want to waste any resources by spinblocking
     /* timer_t timerid = NULL; */
     /* struct sigevent sev; */
     /* timer_create(CLOCK_REALTIME, &sev, &timerid); */
@@ -71,11 +73,17 @@ int main(int argc, char *argv[])
     /* long days = res.tv_sec / SECS_IN_DAY; */
     /* if (days > 0) */
     /* 	printf("%ld days + ", days); */
-    /* printf("%2dh %2dm %2ds", */
+    /* unsigned int year = 1970 + days / 365; */
+    /* printf("%2dy %2dh %2dm %2ds\n", */
+    /* 	   (int) year, */
     /* 	   (int) (res.tv_sec % SECS_IN_DAY) / 3600, */
     /* 	   (int) (res.tv_sec % 3600) / 60, */
     /* 	   (int) res.tv_sec % 60); */
-    /* printf(")\n"); */
+
+    /* time_t t = time(NULL); */
+    /* struct tm tm = *localtime(&t); */
+    /* printf("now: %d-%02d-%02d %02d:%02d:%02d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec); */
+
     /* return 0; */
     
     pthread_mutex_init(&mut, NULL);
@@ -162,7 +170,22 @@ int main(int argc, char *argv[])
 	}
     }
  conn_handle:
-    // 
+    // create a thread to append timestamp to file every 10 sec
+    if (sem_init(&sem_ts, 0, 0)) {
+	perror("sem_init");
+	exit(EXIT_FAILURE);
+    }
+    pthread_t *ts_thread = (pthread_t*)malloc(sizeof(pthread_t)); // time stamp thread
+    pthread_create(ts_thread, NULL, ts_handler, NULL);
+
+    int flags = 0;
+    timer_create(CLOCK_REALTIME, NULL, &timer_ts);
+    signal(SIGALRM, (void(*)()) release_ts);
+    itime.it_interval.tv_sec = TIME_EXPIRE;
+    itime.it_interval.tv_nsec = 0;
+    itime.it_value.tv_sec = TIME_EXPIRE;
+    itime.it_value.tv_nsec = 0;
+    timer_settime(timer_ts, flags, &itime, NULL);
     
     // waits for a connection and creates a new thread to handle
     while(running) {
@@ -215,6 +238,12 @@ int main(int argc, char *argv[])
 	    free(datap);
 	}
     }
+    // clean up data involving timestamp generator
+    sem_post(&sem_ts);
+    pthread_join(*ts_thread, NULL);
+    free(ts_thread);
+    sem_close(&sem_ts);
+    
     return 0;
 }
 
@@ -302,12 +331,13 @@ void read_file_to_buf(char *buf)
  *
  * Return: void
  */
-void write_str(int fd, const char *buf, int len)
+void write_str(const char *buf, int len)
 {
     pthread_mutex_lock(&mut);
+    tot_bytes_recv += len; // put here instead of outside func in case of read right after tot_bytes_recv is increased
     if(write(fd, buf, len) < 0) {
 	perror("write");
-	exit(1);
+	//exit(1); // don't exit immediately to allow clean-up from sigint
     }
     pthread_mutex_unlock(&mut);
 }
@@ -378,8 +408,8 @@ void *thread_conn_handler(void *vargp)
 	}
     }
     
-    tot_bytes_recv += tot_bytes_packet;
-    write_str(fd, buf, tot_bytes_packet);
+    //tot_bytes_recv += tot_bytes_packet;
+    write_str(buf, tot_bytes_packet);
 
     // expand buf if contents of file is bigger than it
     if(tot_bytes_recv > buf_length) {
@@ -401,3 +431,44 @@ void *thread_conn_handler(void *vargp)
     pthread_exit((void*)0);
 }
 
+/**
+ * ts_handler() - Handler called periodically to generate a timestamp and write to file
+ *
+ * Return: void
+ */
+void *ts_handler(void *vargp)
+{
+    while(running) {
+	sem_wait(&sem_ts);
+
+	// generate timestamp
+	char outstr[100];
+	time_t t;
+	struct tm *tmp;
+
+	t = time(NULL);
+	tmp = localtime(&t);
+	if (tmp == NULL) {
+	    perror("localtime");
+	    exit(EXIT_FAILURE);
+	}
+    
+	char ex[] = "timestamp: %a, %d %b %Y %T %z\n";
+	if (strftime(outstr, sizeof(outstr), ex, tmp) == 0) {
+	    fprintf(stderr, "strftime returned 0");
+	    exit(EXIT_FAILURE);
+	}
+	write_str(outstr, strlen(outstr));
+    }
+    pthread_exit((void*)0);
+}
+
+/**
+ * release_ts() - Post a semaphore to allow ts_handler logic to run
+ * 
+ * Return: void
+ */
+void release_ts(int id)
+{
+    sem_post(&sem_ts);
+}
