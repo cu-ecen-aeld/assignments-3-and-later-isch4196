@@ -5,6 +5,6 @@ SRC=aesdsocket.c
 TARGET=aesdsocket
 
 all:
-	$(CROSS_COMPILE)$(CC) $(CFLAGS) $(LDFLAGS) $(SRC) -o $(TARGET)
+	$(CROSS_COMPILE)$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 clean:
 	rm -f *.o $(TARGET)
