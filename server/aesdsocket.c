@@ -60,32 +60,6 @@ static struct itimerspec itime = {{TIME_EXPIRE,0}, {TIME_EXPIRE,0}};
 
 int main(int argc, char *argv[])
 {
-    /* timer_t timerid = NULL; */
-    /* struct sigevent sev; */
-    /* timer_create(CLOCK_REALTIME, &sev, &timerid); */
-    
-    // we can use timer_create. Timers are not inherited, so create in child
-    /* struct timespec res; */
-    /* if (clock_gettime(CLOCK_REALTIME, &res) == -1) { */
-    /* 	perror("clock_getres"); */
-    /* 	exit(EXIT_FAILURE); */
-    /* } */
-    /* long days = res.tv_sec / SECS_IN_DAY; */
-    /* if (days > 0) */
-    /* 	printf("%ld days + ", days); */
-    /* unsigned int year = 1970 + days / 365; */
-    /* printf("%2dy %2dh %2dm %2ds\n", */
-    /* 	   (int) year, */
-    /* 	   (int) (res.tv_sec % SECS_IN_DAY) / 3600, */
-    /* 	   (int) (res.tv_sec % 3600) / 60, */
-    /* 	   (int) res.tv_sec % 60); */
-
-    /* time_t t = time(NULL); */
-    /* struct tm tm = *localtime(&t); */
-    /* printf("now: %d-%02d-%02d %02d:%02d:%02d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec); */
-
-    /* return 0; */
-    
     pthread_mutex_init(&mut, NULL);
     
     init_sigaction();
