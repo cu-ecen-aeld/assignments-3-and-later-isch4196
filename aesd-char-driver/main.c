@@ -21,26 +21,33 @@
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("isch4196");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
+/**
+ * aesd_open() - Initialize anything in preparation for later operations
+ * @inode: pointer to file data (simply contains information about a file)
+ * @filp: pointer to a file structure, representing an open file
+ *
+ * Return: success
+ */
 int aesd_open(struct inode *inode, struct file *filp)
 {
+    struct aesd_dev *dev;
+
     PDEBUG("open");
-    /**
-     * TODO: handle open
-     */
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+    // private_data preserves state information across system calls
+    filp->private_data = dev; 
+    
     return 0;
 }
 
 int aesd_release(struct inode *inode, struct file *filp)
 {
     PDEBUG("release");
-    /**
-     * TODO: handle release
-     */
     return 0;
 }
 
@@ -59,12 +66,21 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
-    PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle write
-     */
+    PDEBUG("write %zu bytes with offset %lld", count, *f_pos);
+
+    struct aesd_dev *dev = filp->private_data;
+    
+    const char *usr_str = (const char *)kmalloc(count, GFP_KERNEL);
+    copy_from_user(usr_str, buf, count);
+    PDEBUG("Copied from user string: %s\n", usr_str);
+    
+    struct aesd_buffer_entry entry;
+    entry.buffptr = usr_str;
+    entry.size = count;
+    aesd_circular_buffer_add_entry(&dev->buffer, &entry);
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -73,6 +89,14 @@ struct file_operations aesd_fops = {
     .release =  aesd_release,
 };
 
+/**
+ * aesd_setup_cdev() - init cdev struct
+ * @dev: pointer to aesd_dev struct containing cdev struct
+ *
+ * cdev is the kernel's internal structure that represents char devices
+ *
+ * Return: zero on success, else fail
+ */
 static int aesd_setup_cdev(struct aesd_dev *dev)
 {
     int err, devno = MKDEV(aesd_major, aesd_minor);
@@ -80,55 +104,54 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
     cdev_init(&dev->cdev, &aesd_fops);
     dev->cdev.owner = THIS_MODULE;
     dev->cdev.ops = &aesd_fops;
-    err = cdev_add (&dev->cdev, devno, 1);
+    err = cdev_add(&dev->cdev, devno, 1);
     if (err) {
         printk(KERN_ERR "Error %d adding aesd cdev", err);
     }
     return err;
 }
 
-
-
 int aesd_init_module(void)
 {
     dev_t dev = 0;
     int result;
-    result = alloc_chrdev_region(&dev, aesd_minor, 1,
-            "aesdchar");
+
+    PDEBUG("init");
+    // dynamically choose a major number
+    result = alloc_chrdev_region(&dev, aesd_minor, 1, "aesdchar");
     aesd_major = MAJOR(dev);
     if (result < 0) {
         printk(KERN_WARNING "Can't get major %d\n", aesd_major);
         return result;
     }
     memset(&aesd_device,0,sizeof(struct aesd_dev));
-
-    /**
-     * TODO: initialize the AESD specific portion of the device
-     */
-
+    
+    // Initialize the AESD specific portion of the device
+    // so.. initialize locking primitive here, as video says...
+    
     result = aesd_setup_cdev(&aesd_device);
-
-    if( result ) {
+    if (result) {
         unregister_chrdev_region(dev, 1);
     }
     return result;
-
 }
 
 void aesd_cleanup_module(void)
 {
+    uint8_t index;
+    struct aesd_circular_buffer buffer;
+    struct aesd_buffer_entry *entry;
     dev_t devno = MKDEV(aesd_major, aesd_minor);
-
+    
+    PDEBUG("cleanup");
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.buffer, index) {
+	PDEBUG("kfree: %s\n", entry->buffptr);
+	kfree(entry->buffptr);
+    }
+    
     cdev_del(&aesd_device.cdev);
-
-    /**
-     * TODO: cleanup AESD specific poritions here as necessary
-     */
-
     unregister_chrdev_region(devno, 1);
 }
-
-
 
 module_init(aesd_init_module);
 module_exit(aesd_cleanup_module);
