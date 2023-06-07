@@ -45,6 +45,16 @@ int aesd_open(struct inode *inode, struct file *filp)
     return 0;
 }
 
+/**
+ * aesd_release()
+ * @inode: pointer to file data (simply contains information about a file)
+ * @filp: pointer to a file structure, representing an open file
+ * 
+ * Deallocate anything that open allocated in filp->private_data. Because we
+ * don't allocate anything, do nothing.
+ * 
+ * Return: success
+ */
 int aesd_release(struct inode *inode, struct file *filp)
 {
     PDEBUG("release");
@@ -62,22 +72,41 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     return retval;
 }
 
+/**
+ * aesd_write()
+ * @filp: 
+ * @buf:
+ * @count:
+ *
+ * Return: num bytes written, or error status
+ */
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
-    PDEBUG("write %zu bytes with offset %lld", count, *f_pos);
-
     struct aesd_dev *dev = filp->private_data;
-    
-    const char *usr_str = (const char *)kmalloc(count, GFP_KERNEL);
-    copy_from_user(usr_str, buf, count);
-    PDEBUG("Copied from user string: %s\n", usr_str);
-    
     struct aesd_buffer_entry entry;
+    const char *buff_to_del;
+    char *usr_str = (char *)kmalloc(count, GFP_KERNEL);
+    if(NULL == usr_str)
+	goto out;
+    
+    if(copy_from_user(usr_str, buf, count)) { // returns num bytes not copied
+	retval = -EFAULT;
+	goto out;
+    }
+    retval = count;
+    PDEBUG("%zu bytes with offset %lld, copied string: %s\n", count, *f_pos, usr_str);
+    
     entry.buffptr = usr_str;
     entry.size = count;
-    aesd_circular_buffer_add_entry(&dev->buffer, &entry);
+    buff_to_del = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
+    if(buff_to_del) {
+	PDEBUG("write: deleting entry: %s\n", buff_to_del);
+	kfree(buff_to_del);
+    }
+
+ out: 
     return retval;
 }
 
@@ -139,7 +168,6 @@ int aesd_init_module(void)
 void aesd_cleanup_module(void)
 {
     uint8_t index;
-    struct aesd_circular_buffer buffer;
     struct aesd_buffer_entry *entry;
     dev_t devno = MKDEV(aesd_major, aesd_minor);
     
