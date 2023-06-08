@@ -61,11 +61,19 @@ int aesd_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+/**
+ * aesd_read()
+ * @filp: pointer to a file structure, representing an open file
+ * @buf: buffer containing user's string
+ * @count: num characters in buf
+ *
+ * Return: 
+ */
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = 0;
-    PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
+    PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
     /**
      * TODO: handle read
      */
@@ -74,9 +82,9 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 
 /**
  * aesd_write()
- * @filp: 
- * @buf:
- * @count:
+ * @filp: pointer to a file structure, representing an open file
+ * @buf: buffer containing user's string
+ * @count: num characters in buf
  *
  * Return: num bytes written, or error status
  */
@@ -114,9 +122,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	    kfree(usr_str);
 	    usr_str = dev->entry.temp_buffer;
 	    dev->entry.temp_buffer = NULL;
+
+	    entry.size = dev->entry.size+count;
+	} else {
+	    entry.size = count;
 	}
 	entry.buffptr = usr_str;
-	entry.size = count;
 	buff_to_del = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
 	if (buff_to_del) {
 	    PDEBUG("write: deleting entry: %s\n", buff_to_del);
@@ -140,7 +151,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	    dev->entry.temp_buffer = usr_str;
 	}
     }
-
  out: 
     return retval;
 }
