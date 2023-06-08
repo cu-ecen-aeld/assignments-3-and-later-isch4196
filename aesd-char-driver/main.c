@@ -88,22 +88,57 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     struct aesd_buffer_entry entry;
     const char *buff_to_del;
     char *usr_str = (char *)kmalloc(count, GFP_KERNEL);
-    if(NULL == usr_str)
+    if (NULL == usr_str)
 	goto out;
     
-    if(copy_from_user(usr_str, buf, count)) { // returns num bytes not copied
+    if (copy_from_user(usr_str, buf, count)) { // returns num bytes not copied
 	retval = -EFAULT;
 	goto out;
     }
     retval = count;
     PDEBUG("%zu bytes with offset %lld, copied string: %s\n", count, *f_pos, usr_str);
-    
-    entry.buffptr = usr_str;
-    entry.size = count;
-    buff_to_del = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
-    if(buff_to_del) {
-	PDEBUG("write: deleting entry: %s\n", buff_to_del);
-	kfree(buff_to_del);
+
+    if (usr_str[count-1] == '\n') {
+	// newline exists, directly store in aesd_circular_buffer
+	PDEBUG("aesd_write newline exists\n");
+	if (dev->entry.temp_buffer) {
+	    // append to string received before that didn't have newline
+	    PDEBUG("aesd_write write_buffer exists\n");
+	    dev->entry.temp_buffer = krealloc(dev->entry.temp_buffer, dev->entry.size+count, GFP_KERNEL);
+	    if (NULL == dev->entry.temp_buffer) {
+		retval = -ENOMEM;
+		goto out;
+	    }
+	    strcat(dev->entry.temp_buffer+dev->entry.size, usr_str); // +1?
+	    PDEBUG("dev->entry.temp_buffer: %s\n", dev->entry.temp_buffer);
+	    kfree(usr_str);
+	    usr_str = dev->entry.temp_buffer;
+	    dev->entry.temp_buffer = NULL;
+	}
+	entry.buffptr = usr_str;
+	entry.size = count;
+	buff_to_del = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
+	if (buff_to_del) {
+	    PDEBUG("write: deleting entry: %s\n", buff_to_del);
+	    kfree(buff_to_del);
+	}
+    } else {
+	// newline !exist, store for now
+	PDEBUG("aesd_write newline does not exist\n");
+	if (dev->entry.temp_buffer) {
+	    // append to string received before that didn't have newline either
+	    PDEBUG("aesd_write write_buffer exists\n");
+	    dev->entry.temp_buffer = krealloc(dev->entry.temp_buffer, dev->entry.size+count, GFP_KERNEL);
+	    if (NULL == dev->entry.temp_buffer) {
+		retval = -ENOMEM;
+		goto out;
+	    }
+	    strcat(dev->entry.temp_buffer+dev->entry.size, usr_str); // +1?
+	    PDEBUG("dev->entry.temp_buffer: %s\n", dev->entry.temp_buffer);
+	    kfree(usr_str);
+	} else {
+	    dev->entry.temp_buffer = usr_str;
+	}
     }
 
  out: 

@@ -25,14 +25,19 @@
 #  define PDEBUG(fmt, args...) /* not debugging: nothing */
 #endif
 
+struct temp_entry {
+    char *temp_buffer;
+    size_t size;
+};
+
 struct aesd_dev
 {
     /**
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
     struct aesd_circular_buffer buffer;
+    struct temp_entry entry; // temporarily store strings that don't have newline yet
     struct cdev cdev;     /* Char device structure      */
 };
-
 
 #endif /* AESD_CHAR_DRIVER_AESDCHAR_H_ */
