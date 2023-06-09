@@ -117,7 +117,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		retval = -ENOMEM;
 		goto out;
 	    }
-	    strcat(dev->entry.temp_buffer+dev->entry.size, usr_str); // +1?
+	    dev->entry.temp_buffer[dev->entry.size] = '\0'; // make sure null terminator exists for strcat
+	    strcat(dev->entry.temp_buffer, usr_str);
 	    PDEBUG("dev->entry.temp_buffer: %s\n", dev->entry.temp_buffer);
 	    kfree(usr_str);
 	    usr_str = dev->entry.temp_buffer;
@@ -128,6 +129,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	    entry.size = count;
 	}
 	entry.buffptr = usr_str;
+	PDEBUG("add_entry: %ld, %s\n", entry.size, entry.buffptr);
 	buff_to_del = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
 	if (buff_to_del) {
 	    PDEBUG("write: deleting entry: %s\n", buff_to_del);
@@ -144,11 +146,15 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		retval = -ENOMEM;
 		goto out;
 	    }
-	    strcat(dev->entry.temp_buffer+dev->entry.size, usr_str); // +1?
-	    PDEBUG("dev->entry.temp_buffer: %s\n", dev->entry.temp_buffer);
+	    dev->entry.temp_buffer[dev->entry.size] = '\0'; // make sure null terminator exists for strcat
+	    strcat(dev->entry.temp_buffer, usr_str); // +1?
+	    dev->entry.size += count;
+	    PDEBUG("dev->entry.size: %ld, dev->entry.temp_buffer: %s\n", dev->entry.size, dev->entry.temp_buffer);
 	    kfree(usr_str);
 	} else {
 	    dev->entry.temp_buffer = usr_str;
+	    dev->entry.size = count;
+	    PDEBUG("dev->entry.size: %ld, dev->entry.temp_buffer: %s\n", dev->entry.size, dev->entry.temp_buffer);
 	}
     }
  out: 
