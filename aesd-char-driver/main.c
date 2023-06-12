@@ -66,17 +66,38 @@ int aesd_release(struct inode *inode, struct file *filp)
  * @filp: pointer to a file structure, representing an open file
  * @buf: buffer containing user's string
  * @count: num characters in buf
+ * @f_pos: represents current file position
  *
- * Return: 
+ * Return: size of bytes read.
+ *         return == count: then request num bytes transferred
+ *         0 < return < count: only portion has been returned
+ *         0: end of file
  */
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
-                loff_t *f_pos)
+		  loff_t *f_pos)
 {
     ssize_t retval = 0;
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry *entry = NULL;
+    size_t entry_offset = 0; // no use of entry_offset right now?
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
-    /**
-     * TODO: handle read
-     */
+
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset);
+    if (!entry) {
+	PDEBUG("Empty entry!\n");
+	goto out;
+    }
+
+    PDEBUG("entry->size: %ld, entry_offset: %ld, entry->buffptr: %s\n", entry->size, entry_offset, entry->buffptr);
+    if(copy_to_user(buf, entry->buffptr, entry->size)) {
+	PDEBUG("Lingering bytes from copy_to_user\n");
+	retval = -EFAULT;
+	goto out;
+    }
+    
+    *f_pos += entry->size;
+    retval = entry->size;
+ out:
     return retval;
 }
 
@@ -85,6 +106,8 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
  * @filp: pointer to a file structure, representing an open file
  * @buf: buffer containing user's string
  * @count: num characters in buf
+ *
+ * TODO: This function can be refactored by always appending string to char ptr first.
  *
  * Return: num bytes written, or error status
  */
@@ -98,7 +121,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     char *usr_str = (char *)kmalloc(count, GFP_KERNEL);
     if (NULL == usr_str)
 	goto out;
-    
+
     if (copy_from_user(usr_str, buf, count)) { // returns num bytes not copied
 	retval = -EFAULT;
 	goto out;
@@ -147,7 +170,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		goto out;
 	    }
 	    dev->entry.temp_buffer[dev->entry.size] = '\0'; // make sure null terminator exists for strcat
-	    strcat(dev->entry.temp_buffer, usr_str); // +1?
+	    strcat(dev->entry.temp_buffer, usr_str);
 	    dev->entry.size += count;
 	    PDEBUG("dev->entry.size: %ld, dev->entry.temp_buffer: %s\n", dev->entry.size, dev->entry.temp_buffer);
 	    kfree(usr_str);
