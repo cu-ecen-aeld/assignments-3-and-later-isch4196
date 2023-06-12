@@ -35,6 +35,7 @@ struct aesd_dev
     /**
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
+    struct mutex lock;
     struct aesd_circular_buffer buffer;
     struct temp_entry entry; // temporarily store strings that don't have newline yet
     struct cdev cdev;     /* Char device structure      */
