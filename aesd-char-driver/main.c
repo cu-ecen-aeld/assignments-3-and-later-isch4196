@@ -17,6 +17,7 @@
 #include <linux/types.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
+#include <linux/mutex.h>
 #include "aesdchar.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
@@ -80,6 +81,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     struct aesd_dev *dev = filp->private_data;
     struct aesd_buffer_entry *entry = NULL;
     size_t entry_offset = 0; // no use of entry_offset right now?
+    
+    if(mutex_lock_interruptible(&dev->lock)) {
+	retval = -EINTR;
+	goto out;
+    }
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
     entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset);
@@ -98,6 +104,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     *f_pos += entry->size;
     retval = entry->size;
  out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
@@ -118,7 +125,14 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     struct aesd_dev *dev = filp->private_data;
     struct aesd_buffer_entry entry;
     const char *buff_to_del;
-    char *usr_str = (char *)kmalloc(count, GFP_KERNEL);
+    char *usr_str = NULL;
+    
+    if(mutex_lock_interruptible(&dev->lock)) {
+	retval = -EINTR;
+	goto out;
+    }
+    
+    usr_str = (char *)kmalloc(count, GFP_KERNEL);
     if (NULL == usr_str)
 	goto out;
 
@@ -180,7 +194,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	    PDEBUG("dev->entry.size: %ld, dev->entry.temp_buffer: %s\n", dev->entry.size, dev->entry.temp_buffer);
 	}
     }
- out: 
+ out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
@@ -228,9 +243,8 @@ int aesd_init_module(void)
         return result;
     }
     memset(&aesd_device,0,sizeof(struct aesd_dev));
-    
-    // Initialize the AESD specific portion of the device
-    // so.. initialize locking primitive here, as video says...
+    mutex_init(&aesd_device.lock);
+    // on need init circular buffer, memset already takes care of that since its part of struct
     
     result = aesd_setup_cdev(&aesd_device);
     if (result) {
