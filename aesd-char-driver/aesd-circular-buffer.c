@@ -30,11 +30,12 @@
 struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct aesd_circular_buffer *buffer,
             size_t char_offset, size_t *entry_offset_byte_rtn )
 {
+    size_t tot_size = 0;
+    uint8_t i = buffer->out_offs;
+    
     if (!buffer)
 	return NULL;
     
-    size_t tot_size = 0;
-    uint8_t i = buffer->out_offs;
     do {
 	tot_size += buffer->entry[i].size;
 	if(char_offset < tot_size) {
@@ -63,6 +64,12 @@ const char* aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, 
 	buffer->entry[buffer->in_offs] = *add_entry;
 	buffer->in_offs += 1;
 	buffer->out_offs += 1;
+	if(buffer->in_offs >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+	    buffer->in_offs = 0;
+	}
+	if(buffer->out_offs >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+	    buffer->out_offs = 0;
+	}
 	return buffptr;
     } else {
 	buffer->entry[buffer->in_offs] = *add_entry;
