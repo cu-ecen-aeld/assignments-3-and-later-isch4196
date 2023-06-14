@@ -18,12 +18,19 @@
 #include <semaphore.h>
 #include "queue.h"
 
+#define USE_AESD_CHAR_DEVICE 1
+
 // Network macros
 #define SERVER_PORT	"9000"
 #define BACKLOG		10	// num pending connections queue to hold
-#define FILE_NAME	"/var/tmp/aesdsocketdata"
-#define BUF_LENGTH	1024
 
+#if USE_AESD_CHAR_DEVICE
+#define FILE_NAME	"/dev/aesdchar"
+#else
+#define FILE_NAME	"/var/tmp/aesdsocketdata"
+#endif
+
+#define BUF_LENGTH	1024
 #define SECS_IN_DAY	(24 * 60 * 60)
 #define TIME_EXPIRE     10	// seconds
 
@@ -55,8 +62,11 @@ static unsigned int tot_bytes_recv = 0;
 static volatile unsigned char running = 1;
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
 static sem_t sem_ts;
+
+#if !USE_AESD_CHAR_DEVICE
 static timer_t timer_ts;
 static struct itimerspec itime = {{TIME_EXPIRE,0}, {TIME_EXPIRE,0}};
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -144,6 +154,7 @@ int main(int argc, char *argv[])
 	}
     }
  conn_handle:
+#if !USE_AESD_CHAR_DEVICE
     // create a thread to append timestamp to file every 10 sec
     if (sem_init(&sem_ts, 0, 0)) {
 	perror("sem_init");
@@ -160,7 +171,7 @@ int main(int argc, char *argv[])
     itime.it_value.tv_sec = TIME_EXPIRE;
     itime.it_value.tv_nsec = 0;
     timer_settime(timer_ts, flags, &itime, NULL);
-    
+#endif    
     // waits for a connection and creates a new thread to handle
     while(running) {
 	new_conn_addr_size = sizeof(new_conn_addr);
@@ -212,12 +223,13 @@ int main(int argc, char *argv[])
 	    free(datap);
 	}
     }
+#if !USE_AESD_CHAR_DEVICE
     // clean up data involving timestamp generator
     sem_post(&sem_ts);
     pthread_join(*ts_thread, NULL);
     free(ts_thread);
     sem_close(&sem_ts);
-    
+#endif    
     return 0;
 }
 
@@ -292,7 +304,19 @@ void read_file_to_buf(char *buf)
 	exit(1);
     }
     pthread_mutex_lock(&mut);
-    read(fd, buf, tot_bytes_recv);
+
+    int bytes_read = 0;
+    int bytes_to_read = tot_bytes_recv;
+    
+    printf("bytes_to_read: %d\n", bytes_to_read);
+    do {
+	int temp_bytes_read = read(fd, buf+bytes_read, bytes_to_read);
+	bytes_to_read -= temp_bytes_read;
+	bytes_read += temp_bytes_read;
+	printf("bytes_to_read: %d\n", bytes_to_read);
+    } while(bytes_to_read > 0);
+    printf("%s\n", buf);
+    
     pthread_mutex_unlock(&mut);
     close(fd);
 }   
@@ -397,6 +421,7 @@ void *thread_conn_handler(void *vargp)
     }
 	
     read_file_to_buf(buf);
+    
     send(conn_data->new_fd, buf, tot_bytes_recv, 0);    
     free(buf);
     

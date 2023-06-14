@@ -81,13 +81,14 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     struct aesd_dev *dev = filp->private_data;
     struct aesd_buffer_entry *entry = NULL;
     size_t entry_offset = 0; // no use of entry_offset right now?
+    unsigned long num_bytes_not_copied = 0;
     
     if(mutex_lock_interruptible(&dev->lock)) {
-	retval = -EINTR;
+	retval = -ERESTARTSYS;
 	goto out;
     }
+    
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
-
     entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset);
     if (!entry) {
 	PDEBUG("Empty entry!\n");
@@ -95,14 +96,16 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     }
 
     PDEBUG("entry->size: %ld, entry_offset: %ld, entry->buffptr: %s\n", entry->size, entry_offset, entry->buffptr);
-    if(copy_to_user(buf, entry->buffptr, entry->size)) {
+    num_bytes_not_copied = copy_to_user(buf, entry->buffptr, entry->size);
+    if (num_bytes_not_copied) {
 	PDEBUG("Lingering bytes from copy_to_user\n");
 	retval = -EFAULT;
 	goto out;
     }
-    
-    *f_pos += entry->size;
-    retval = entry->size;
+
+    retval = entry->size - num_bytes_not_copied;
+    *f_pos += retval;
+    PDEBUG("retval: %ld, num_bytes_not_copied: %ld\n", retval, num_bytes_not_copied);
  out:
     mutex_unlock(&dev->lock);
     return retval;
@@ -128,11 +131,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     char *usr_str = NULL;
     
     if(mutex_lock_interruptible(&dev->lock)) {
-	retval = -EINTR;
+	retval = -ERESTARTSYS;
 	goto out;
     }
     
-    usr_str = (char *)kmalloc(count, GFP_KERNEL);
+    // need to allocate 2x else error with anything multiple of 8 bytes?
+    usr_str = (char *)kmalloc(count*2, GFP_KERNEL); 
     if (NULL == usr_str)
 	goto out;
 
