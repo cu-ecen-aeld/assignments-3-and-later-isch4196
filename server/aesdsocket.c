@@ -39,7 +39,6 @@ void sigint_handler(int sig);
 int init_file_writer(void);
 void read_file_to_buf(char *buf);
 void write_str(const char *buf, int len);
-void close_file(int fd);
 void *get_in_addr(struct sockaddr *sa);
 void *thread_conn_handler(void *vargp);
 void *ts_handler(void *vargp);
@@ -57,8 +56,6 @@ typedef struct slist_data_s {
     SLIST_ENTRY(slist_data_s) entries;
 } slist_data_t;
 
-static int test;
-static int fd;
 static unsigned int tot_bytes_recv = 0;
 static volatile unsigned char running = 1;
 static pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER;
@@ -180,10 +177,7 @@ int main(int argc, char *argv[])
 	    perror("accept failure");
 	    break; // exit gracefully
 	}
-	if(!test) {
-	    fd = init_file_writer();
-	    test = 1;
-	}
+
 	// initialize node data
 	slist_data_t *datap = (slist_data_t*)malloc(sizeof(slist_data_t));
 	datap->thread = (pthread_t*)malloc(sizeof(pthread_t));
@@ -213,7 +207,6 @@ int main(int argc, char *argv[])
     }
 
     // clean up after received a sigint
-    close_file(fd);
     remove(FILE_NAME);
     pthread_mutex_destroy(&mut);
     slist_data_t *datap = NULL;
@@ -283,7 +276,7 @@ int init_file_writer(void)
     int fd;
 
     if ((fd = open(FILE_NAME, O_WRONLY|O_CREAT|O_TRUNC, 0644)) < 0) {
-	perror("open fali");
+	perror("open fail");
 	exit(1);
     }
     return fd;
@@ -312,17 +305,15 @@ void read_file_to_buf(char *buf)
     int bytes_read = 0;
     int bytes_to_read = tot_bytes_recv;
     
-    printf("bytes_to_read: %d\n", bytes_to_read);
     do {
 	int temp_bytes_read = read(fd, buf+bytes_read, bytes_to_read);
 	bytes_to_read -= temp_bytes_read;
 	bytes_read += temp_bytes_read;
-	printf("bytes_to_read: %d\n", bytes_to_read);
     } while(bytes_to_read > 0);
-    printf("%s\n", buf);
-    
-    pthread_mutex_unlock(&mut);
+
     close(fd);
+    pthread_mutex_unlock(&mut);
+    
 }   
 
 /**
@@ -335,27 +326,16 @@ void read_file_to_buf(char *buf)
  */
 void write_str(const char *buf, int len)
 {
+    int fd = init_file_writer();
+    
     pthread_mutex_lock(&mut);
     tot_bytes_recv += len; // put here instead of outside func in case of read right after tot_bytes_recv is increased
     if(write(fd, buf, len) < 0) {
 	perror("write");
 	//exit(1); // don't exit immediately to allow clean-up from sigint
     }
+    close(fd);
     pthread_mutex_unlock(&mut);
-}
-
-/**
- * close_file() - Close a file descriptor
- * @fd: file descriptor to closen
- *
- * Return: void
- */
-void close_file(int fd)
-{
-    if(close(fd) < 0) {
-	perror("close");
-	exit(1);
-    }
 }
 
 // get sockaddr, IPV4 or IPV6
