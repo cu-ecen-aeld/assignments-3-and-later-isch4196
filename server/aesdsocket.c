@@ -57,6 +57,7 @@ typedef struct slist_data_s {
     SLIST_ENTRY(slist_data_s) entries;
 } slist_data_t;
 
+static int test;
 static int fd;
 static unsigned int tot_bytes_recv = 0;
 static volatile unsigned char running = 1;
@@ -85,7 +86,7 @@ int main(int argc, char *argv[])
 	daemon_flag = !strcmp(argv[1], "-d");
     } 
 
-    fd = init_file_writer();
+    
 
     SLIST_HEAD(pthread_slist, slist_data_s) head;
     SLIST_INIT(&head);
@@ -179,7 +180,10 @@ int main(int argc, char *argv[])
 	    perror("accept failure");
 	    break; // exit gracefully
 	}
-
+	if(!test) {
+	    fd = init_file_writer();
+	    test = 1;
+	}
 	// initialize node data
 	slist_data_t *datap = (slist_data_t*)malloc(sizeof(slist_data_t));
 	datap->thread = (pthread_t*)malloc(sizeof(pthread_t));
