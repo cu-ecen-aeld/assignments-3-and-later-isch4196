@@ -117,7 +117,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
  * @buf: buffer containing user's string
  * @count: num characters in buf
  *
- * TODO: This function can be refactored by always appending string to char ptr first.
+ * TODO: Yes, this function can be refactored by always appending string to char ptr first.
  *
  * Return: num bytes written, or error status
  */
@@ -135,10 +135,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	goto out;
     }
     
-    // need to allocate 2x else error with anything multiple of 8 bytes?
-    usr_str = (char *)kmalloc(count*2, GFP_KERNEL); 
-    if (NULL == usr_str)
+#warning need to add +1 to count in order for multiples of 8 bytes to work properly else garbage??
+    usr_str = (char *)kmalloc(count*sizeof(char)+1, GFP_KERNEL); 
+    if (NULL == usr_str) {
+	retval = -ENOMEM;
 	goto out;
+    }
 
     if (copy_from_user(usr_str, buf, count)) { // returns num bytes not copied
 	retval = -EFAULT;

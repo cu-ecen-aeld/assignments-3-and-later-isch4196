@@ -1,8 +1,8 @@
 #!/bin/sh
 module=aesdchar
 device=aesdchar
-mode="664"
-#mode="666"
+#mode="664"
+mode="666"
 if [ "$mode" = "666" ]; then
     echo "Remember to change the mode back to 664!"
 fi
