@@ -67,7 +67,6 @@ const char* aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, 
 	    buffer->in_offs = 0;
 	}
 	buffer->out_offs = buffer->in_offs;
-	
 	return buffptr;
     } else {
 	buffer->entry[buffer->in_offs] = *add_entry;
@@ -80,6 +79,18 @@ const char* aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, 
 	}
     }
     return NULL;
+}
+
+size_t aesd_total_buffer_size(struct aesd_circular_buffer *buffer)
+{
+    size_t size = 0;
+    uint8_t index;
+    struct aesd_buffer_entry *entry;
+
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, buffer, index) {
+	size += entry->size;
+    }
+    return size;
 }
 
 /**

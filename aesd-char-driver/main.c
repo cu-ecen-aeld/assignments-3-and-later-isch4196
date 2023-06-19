@@ -97,14 +97,14 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     }
 
     PDEBUG("entry->size: %ld, entry_offset: %ld, entry->buffptr: %s\n", entry->size, entry_offset, entry->buffptr);
-    num_bytes_not_copied = copy_to_user(buf, entry->buffptr, entry->size);
+    num_bytes_not_copied = copy_to_user(buf, entry->buffptr+entry_offset, entry->size-entry_offset);
     if (num_bytes_not_copied) {
 	PDEBUG("Lingering bytes from copy_to_user\n");
 	retval = -EFAULT;
 	goto out;
     }
 
-    retval = entry->size - num_bytes_not_copied;
+    retval = entry->size - num_bytes_not_copied - entry_offset;
     *f_pos += retval;
     PDEBUG("retval: %ld, num_bytes_not_copied: %ld\n", retval, num_bytes_not_copied);
  out:
@@ -173,6 +173,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	    entry.size = count;
 	}
 	entry.buffptr = usr_str;
+	*f_pos += entry.size;
 	PDEBUG("add_entry: %ld, %s\n", entry.size, entry.buffptr);
 	buff_to_del = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
 	if (buff_to_del) {
@@ -206,12 +207,33 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
+/**
+ * aesd_llseek()
+ * @filp:   file structure to seek on
+ * @off:    file offset to seek to 
+ * @whence: type of seek
+ *
+ * Return: new position
+ */
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+{
+    loff_t retval = 0;
+    struct aesd_dev *dev = filp->private_data;
+    
+    size_t buffer_size = aesd_total_buffer_size(&dev->buffer);
+    PDEBUG("aesd_llseek: off: %lld, whence: %d, buffer size: %ld\n", off, whence, buffer_size);
+    retval = fixed_size_llseek(filp, off, whence, buffer_size);
+    PDEBUG("aesd_llseek: retval: %lld\n", retval);
+    return retval;
+}
+
 struct file_operations aesd_fops = {
-    .owner =    THIS_MODULE,
-    .read =     aesd_read,
-    .write =    aesd_write,
-    .open =     aesd_open,
-    .release =  aesd_release,
+    .owner   = THIS_MODULE,
+    .open    = aesd_open,
+    .write   = aesd_write,
+    .read    = aesd_read,
+    .llseek  = aesd_llseek,
+    .release = aesd_release,
 };
 
 /**
