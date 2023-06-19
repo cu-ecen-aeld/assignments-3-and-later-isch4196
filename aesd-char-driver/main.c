@@ -222,8 +222,14 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
     
     size_t buffer_size = aesd_total_buffer_size(&dev->buffer);
     PDEBUG("aesd_llseek: off: %lld, whence: %d, buffer size: %ld\n", off, whence, buffer_size);
+    if(mutex_lock_interruptible(&dev->lock)) {
+	retval = -ERESTARTSYS;
+	goto out;
+    }
     retval = fixed_size_llseek(filp, off, whence, buffer_size);
     PDEBUG("aesd_llseek: retval: %lld\n", retval);
+ out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
