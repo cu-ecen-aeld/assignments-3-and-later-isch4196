@@ -16,7 +16,9 @@
 #include <pthread.h>
 #include <time.h>
 #include <semaphore.h>
+#include <sys/ioctl.h>
 #include "queue.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #define USE_AESD_CHAR_DEVICE 1
 
@@ -37,7 +39,7 @@
 void init_sigaction(void);
 void sigint_handler(int sig);
 int init_file_writer(void);
-void read_file_to_buf(char *buf);
+void read_file_to_buf(int fd, char *buf);
 void write_str(const char *buf, int len);
 void *get_in_addr(struct sockaddr *sa);
 void *thread_conn_handler(void *vargp);
@@ -292,26 +294,38 @@ int init_file_writer(void)
  *
  * Return: void
  */
-void read_file_to_buf(char *buf)
+void read_file_to_buf(int fd, char *buf)
 {
-    int fd;
-
-    if ((fd = open(FILE_NAME, O_RDONLY, 0644)) < 0) {
-	perror("open fail");
-	exit(1);
+    memset(buf, 0, tot_bytes_recv);
+    int fds;
+    if (!fd) {
+	if ((fds = open(FILE_NAME, O_RDONLY, 0644)) < 0) {
+	    perror("open fail");
+	    exit(1);
+	}
+    } else {
+	/* printf("correct\n"); */
+	fds = fd;
     }
     pthread_mutex_lock(&mut);
 
     int bytes_read = 0;
     int bytes_to_read = tot_bytes_recv;
-    
+    int temp_bytes_read = 0;
     do {
-	int temp_bytes_read = read(fd, buf+bytes_read, bytes_to_read);
+	temp_bytes_read = read(fds, buf+bytes_read, bytes_to_read);
+	if (!temp_bytes_read) 
+	    break;
 	bytes_to_read -= temp_bytes_read;
 	bytes_read += temp_bytes_read;
-    } while(bytes_to_read > 0);
-
-    close(fd);
+	/* printf("next bytes to read: %d, and temp_bytes: %d\n", bytes_to_read, temp_bytes_read); */
+	/* printf("buf: %s\n", buf); */
+    } while(temp_bytes_read && bytes_to_read);
+    
+    if(!fd) {
+	close(fds);
+    }
+    tot_bytes_recv = bytes_read;
     pthread_mutex_unlock(&mut);
     
 }   
@@ -389,22 +403,39 @@ void *thread_conn_handler(void *vargp)
 	    }
 	}
     }
-    
-    //tot_bytes_recv += tot_bytes_packet;
-    write_str(buf, tot_bytes_packet);
 
-    // expand buf if contents of file is bigger than it
-    if(tot_bytes_recv > buf_length) {
-	do {
-	    buf_length <<= 1;
-	} while(tot_bytes_recv > buf_length);
-	if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
-	    perror("reallocarray error");
-	    exit(1);
-	}
-    }
+    if (!strncmp("AESDCHAR_IOCSEEKTO:", buf, 19)) {
+	const char delim[] = ",";
+	uint32_t write_cmd = atoi(strtok(buf+19, delim));
+	uint32_t write_cmd_offset = atoi(strtok(NULL, delim));
+	struct aesd_seekto seekto = {write_cmd, write_cmd_offset};
+	/* printf("%d %d\n", seekto.write_cmd, seekto.write_cmd_offset); */
 	
-    read_file_to_buf(buf);
+	int fd = open(FILE_NAME, O_RDWR, 0644);
+	/* printf("fd: %d\n", fd); */
+
+	if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto)) {
+	    printf("Error with ioctl...\n");
+	}
+	/* printf("done with ioctl\n"); */
+	//tot_bytes_recv -= write_cmd_offset;
+	read_file_to_buf(fd, buf);
+	close(fd);
+	/* printf("tot_bytes_recv: %d\n", tot_bytes_recv); */
+    } else {
+	write_str(buf, tot_bytes_packet);
+	// expand buf if contents of file is bigger than it
+	if(tot_bytes_recv > buf_length) {
+	    do {
+		buf_length <<= 1;
+	    } while(tot_bytes_recv > buf_length);
+	    if(!(buf = reallocarray(buf, (buf_length <<= 1), sizeof(char)))) {
+		perror("reallocarray error");
+		exit(1);
+	    }
+	}
+	read_file_to_buf(0, buf);
+    }
     
     send(conn_data->new_fd, buf, tot_bytes_recv, 0);    
     free(buf);

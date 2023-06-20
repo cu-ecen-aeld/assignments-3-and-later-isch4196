@@ -20,6 +20,8 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -38,11 +40,10 @@ struct aesd_dev aesd_device;
 int aesd_open(struct inode *inode, struct file *filp)
 {
     struct aesd_dev *dev;
-
-    PDEBUG("open");
+    PDEBUG("open: %lld", filp->f_pos);
     dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
     // private_data preserves state information across system calls
-    filp->private_data = dev; 
+    filp->private_data = dev;
     
     return 0;
 }
@@ -52,14 +53,14 @@ int aesd_open(struct inode *inode, struct file *filp)
  * @inode: pointer to file data (simply contains information about a file)
  * @filp: pointer to a file structure, representing an open file
  * 
- * Deallocate anything that open allocated in filp->private_data. Because we
+ * Deallocate anything that open allocated in filp->private_data, but because we
  * don't allocate anything, do nothing.
  * 
  * Return: success
  */
 int aesd_release(struct inode *inode, struct file *filp)
 {
-    PDEBUG("release");
+    PDEBUG("release: %lld", filp->f_pos);
     return 0;
 }
 
@@ -89,10 +90,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	goto out;
     }
     
-    PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
+    PDEBUG("read %zu bytes with offset %lld, or %lld", count, *f_pos, filp->f_pos);
     entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset);
     if (!entry) {
 	PDEBUG("Empty entry!\n");
+	retval = 0;
 	goto out;
     }
 
@@ -233,13 +235,90 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
     return retval;
 }
 
+/**
+ * aesd_adjust_file_offset()
+ * @filp:
+ * @write_cmd:
+ * @write_cmd_offset 
+ *
+ * Adjust the file offset (f_pos) parameter of @filp based on location specified
+ * by @write_cmd (the zero referenced command to locate) and @write_cmd_offset
+ * (the zero referenced offset into the command)
+ *
+ * Return: 0 if successful, negative if error occured:
+ *     -ERESTARTSYS if mutex could not be obtained
+ *     -EINVAL if write command or write_cmd_offset was out of range
+ */
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, unsigned int write_cmd_offset)
+{
+    unsigned int offset = 0, i = 0;
+    long retval = 0;
+    struct aesd_dev *dev = filp->private_data;
+    
+    // error checking
+    if (write_cmd > AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED-1) {
+	retval = -EINVAL;
+	goto out;
+    }
+    if (write_cmd_offset > dev->buffer.entry[write_cmd].size-1) {
+	retval = -EINVAL;
+	goto out;
+    }
+
+    // now obtain the offset
+    offset += write_cmd_offset;
+    while (i++ < write_cmd) {
+	offset += dev->buffer.entry[i].size;
+    }
+    filp->f_pos = offset;
+    retval = 0;
+    PDEBUG("aesd_adjust_file_offset: %lld\n", filp->f_pos);
+ out:
+    return retval;
+}
+
+/**
+ * aesd_ioctl()
+ * @filp: pointer to file structure
+ * @cmd:
+ * @arg:
+ *
+ *
+ */
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    long retval = 0;
+    struct aesd_seekto seekto;
+    
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+    if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+
+    switch(cmd) {
+    case AESDCHAR_IOCSEEKTO:
+	if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto))) {
+	    retval = -EFAULT;
+	    break;
+	}
+	PDEBUG("aesd_ioctl %d, %d\n", seekto.write_cmd, seekto.write_cmd_offset);
+	retval = aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset);
+	break;
+    default:
+	PDEBUG("aesd_ioctl default case\n");
+	retval = -ENOTTY;
+	break;
+    }
+    PDEBUG("aesd_ioctl: %lld, retval: %ld\n", filp->f_pos, retval);
+    return retval;
+}
+
 struct file_operations aesd_fops = {
-    .owner   = THIS_MODULE,
-    .open    = aesd_open,
-    .write   = aesd_write,
-    .read    = aesd_read,
-    .llseek  = aesd_llseek,
-    .release = aesd_release,
+    .owner	    = THIS_MODULE,
+    .open	    = aesd_open,
+    .write	    = aesd_write,
+    .unlocked_ioctl = aesd_ioctl,
+    .read	    = aesd_read,
+    .llseek	    = aesd_llseek,
+    .release	    = aesd_release,
 };
 
 /**
