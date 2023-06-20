@@ -264,7 +264,11 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, u
 	retval = -EINVAL;
 	goto out;
     }
-
+    
+    if(mutex_lock_interruptible(&dev->lock)) {
+	retval = -ERESTARTSYS;
+	goto out;
+    }
     // now obtain the offset
     offset += write_cmd_offset;
     while (i++ < write_cmd) {
@@ -274,6 +278,7 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, u
     retval = 0;
     PDEBUG("aesd_adjust_file_offset: %lld\n", filp->f_pos);
  out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
